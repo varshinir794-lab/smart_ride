@@ -175,7 +175,7 @@ def do_register():
 def api_stats():
     with get_db() as conn:
         total_rides    = conn.execute(
-            "SELECT COUNT(*) FROM rides WHERE status!='completed' "
+            "SELECT COUNT(*) FROM rides WHERE status NOT IN ('completed','expired') "
             "AND datetime(replace(departure_time,'T',' ')) >= datetime('now','localtime')"
         ).fetchone()[0]
         total_users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -222,7 +222,7 @@ RIDE_QUERY = """
 def api_rides():
     with get_db() as conn:
         rows = conn.execute(RIDE_QUERY.format(where=
-            "WHERE r.status != 'completed' "
+            "WHERE r.status NOT IN ('completed','expired') "
             "AND datetime(replace(r.departure_time,'T',' ')) >= datetime('now','localtime')"
         )).fetchall()
     return jsonify([row_to_ride(r) for r in rows])
@@ -237,7 +237,7 @@ def api_search():
 
     with get_db() as conn:
         rows = conn.execute(RIDE_QUERY.format(where=
-            "WHERE r.status != 'completed' "
+            "WHERE r.status NOT IN ('completed','expired') "
             "AND datetime(replace(r.departure_time,'T',' ')) >= datetime('now','localtime')"
         )).fetchall()
     def jaccard(a, b):
@@ -384,6 +384,16 @@ def api_complete_ride():
 def api_my_rides():
     uid = session['user_id']
     with get_db() as conn:
+        # Auto-mark expired rides with no bookings as 'expired' status
+        conn.execute("""
+            UPDATE rides SET status='expired'
+            WHERE driver_id=? AND status='active'
+            AND datetime(replace(departure_time,'T',' ')) < datetime('now','localtime')
+            AND id NOT IN (
+                SELECT ride_id FROM bookings WHERE status IN ('confirmed','completed')
+            )
+        """, (uid,))
+
         offered = conn.execute("""
             SELECT r.*,
                    (SELECT COUNT(*) FROM bookings b WHERE b.ride_id=r.id AND b.status IN ('confirmed','completed')) AS bookings_count
@@ -410,7 +420,7 @@ def api_my_rides():
             'fare':            r['fare'],
             'status':          r['status'] or 'active',
             'bookings_count':  r['bookings_count'],
-        } for r in offered],
+        } for r in offered if r['status'] != 'expired'],
         'booked': [{
             'id':            r['id'],
             'from_location': r['from_location'],
