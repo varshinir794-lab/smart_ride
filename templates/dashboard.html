@@ -129,6 +129,9 @@
   .status-active{background:rgba(16,185,129,.15);color:var(--green);}
   .status-driver_arrived{background:rgba(249,115,22,.2);color:var(--orange);}
   .status-completed{background:rgba(16,185,129,.2);color:var(--green);}
+  .status-expired{background:rgba(100,116,139,.2);color:#94a3b8;}
+  .badge-muted{background:rgba(100,116,139,.2);color:#94a3b8;border:1px solid rgba(100,116,139,.3);}
+  .ride-card.status-expired-card{opacity:.6;}
   .status-dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 1.2s infinite;}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
@@ -496,6 +499,11 @@ function renderRide(ride) {
   const rating = ride.avg_rating ? parseFloat(ride.avg_rating).toFixed(1) : '—';
   const match  = ride.match_score ? `<span class="match-badge">⚡ ${ride.match_score}% match</span>` : '';
   const isOwn  = ride.driver_id === USER_ID;
+
+  // Detect if the ride's departure time has already passed (client-side safety net)
+  const depDate   = ride.departure_time ? new Date(ride.departure_time) : null;
+  const isExpired = depDate && depDate < new Date();
+
   const time   = ride.departure_time
     ? new Date(ride.departure_time).toLocaleString('en-IN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })
     : ride.departure_time;
@@ -503,7 +511,9 @@ function renderRide(ride) {
   const status = ride.status || 'active';
 
   const statusChips = {
-    active:         `<span class="status-chip status-active"><span class="status-dot"></span>Active</span>`,
+    active:         isExpired
+      ? `<span class="status-chip status-expired">⏰ Departed</span>`
+      : `<span class="status-chip status-active"><span class="status-dot"></span>Active</span>`,
     driver_arrived: `<span class="status-chip status-driver_arrived">🚗 Driver Arrived!</span>`,
     completed:      `<span class="status-chip status-completed">✅ Completed</span>`,
   };
@@ -554,8 +564,9 @@ function renderRide(ride) {
         <div class="driver-name">${ride.driver_name || 'Unknown'}</div>
         <div class="driver-role">${ride.driver_role} · <span class="stars">★</span> ${rating}</div>
       </div>
-      ${!isOwn && seats > 0 && status === 'active'
+      ${!isOwn && seats > 0 && status === 'active' && !isExpired
         ? `<button class="btn btn-green btn-sm" onclick="bookRide(${ride.id}, this)">Book</button>` : ''}
+      ${isExpired && !isOwn ? '<span class="badge badge-muted">Expired</span>' : ''}
       ${isOwn ? '<span class="badge badge-blue">Your Ride</span>' : ''}
       ${seats === 0 && !isOwn ? '<span class="badge badge-red">Full</span>' : ''}
     </div>
@@ -575,27 +586,21 @@ function renderRidesInto(rides, elId) {
 
 async function loadAllRides() {
   document.getElementById('find-rides').innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading rides...</div>';
-  const now = Date.now();
   const rides = await fetch('/api/rides').then(r => r.json());
-  const fresh = rides.filter(r => !r.departure_time || new Date(r.departure_time.replace('T',' ')).getTime() >= now);
-  renderRidesInto(fresh, 'find-rides');
+  renderRidesInto(rides, 'find-rides');
 }
 async function loadOverviewRides() {
   document.getElementById('overview-rides').innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading...</div>';
-  const now = Date.now();
   const rides = await fetch('/api/rides').then(r => r.json());
-  const fresh = rides.filter(r => !r.departure_time || new Date(r.departure_time.replace('T',' ')).getTime() >= now);
-  renderRidesInto(fresh.slice(0, 4), 'overview-rides');
+  renderRidesInto(rides.slice(0, 4), 'overview-rides');
 }
 async function searchRides() {
   document.getElementById('find-rides').innerHTML = '<div class="loading"><div class="spinner"></div><br>AI matching rides...</div>';
-  const now = Date.now();
   const rides = await apiPost('/api/rides/search', {
     from: document.getElementById('s-from').value,
     to:   document.getElementById('s-to').value
   });
-  const fresh = rides.filter(r => !r.departure_time || new Date(r.departure_time.replace('T',' ')).getTime() >= now);
-  renderRidesInto(fresh, 'find-rides');
+  renderRidesInto(rides, 'find-rides');
 }
 
 // ── Book ride ─────────────────────────────────────────────────────────────
@@ -669,55 +674,37 @@ async function markRideComplete(rideId, btn) {
 // ── My Rides ──────────────────────────────────────────────────────────────
 async function loadMyRides() {
   const data = await fetch('/api/my-rides').then(r => r.json());
-  const now = Date.now();
-
-  function isExpired(ride) {
-    if (!ride.departure_time) return false;
-    return new Date(ride.departure_time.replace('T', ' ')).getTime() < now;
-  }
 
   // ── Offered rides ──
   const offeredEl = document.getElementById('my-offered-rides');
-
-  // Filter out expired rides that nobody booked (status still 'active', 0 bookings)
-  const offeredVisible = data.offered.filter(r => {
-    if (r.status === 'completed') return true; // always show completed
-    if (isExpired(r) && (r.bookings_count === 0 || r.bookings_count === '0')) return false;
-    return true;
-  });
-
-  if (!offeredVisible.length) {
+  if (!data.offered.length) {
     offeredEl.innerHTML = `<div class="empty-state"><div class="empty-icon">🚘</div><div class="empty-text">No rides offered yet</div><div class="empty-sub">Share your commute with campus mates!</div></div>`;
   } else {
-    offeredEl.innerHTML = `<div class="rides-grid">${offeredVisible.map(r => {
+    offeredEl.innerHTML = `<div class="rides-grid">${data.offered.map(r => {
       const status = r.status || 'active';
-      const expired = isExpired(r);
       const arrivedBanner = status === 'driver_arrived'
         ? `<div class="arrived-banner"><span class="arrived-banner-icon">🚗</span><div class="arrived-banner-text"><strong>You've arrived at pickup!</strong><span>Waiting for passengers</span></div></div>` : '';
       const chips = {
-        active:         expired
-          ? `<span class="status-chip" style="background:rgba(100,116,139,.2);color:#94a3b8;">⏰ Expired</span>`
-          : `<span class="status-chip status-active"><span class="status-dot"></span>Active</span>`,
+        active:         `<span class="status-chip status-active"><span class="status-dot"></span>Active</span>`,
         driver_arrived: `<span class="status-chip status-driver_arrived">🚗 Driver Arrived</span>`,
         completed:      `<span class="status-chip status-completed">✅ Completed</span>`,
       };
-      // Only show action buttons if ride is NOT expired and NOT completed
       let actionBtns = '';
-      if (!expired && status === 'active') {
+      if (status === 'active') {
         actionBtns = `
           <button class="btn btn-orange btn-sm" onclick="markDriverArrived(${r.id}, this)">🚗 I've Arrived</button>
           <button class="btn btn-green btn-sm"  onclick="markRideComplete(${r.id}, this)">✅ Complete</button>`;
-      } else if (!expired && status === 'driver_arrived') {
+      } else if (status === 'driver_arrived') {
         actionBtns = `<button class="btn btn-green btn-sm" onclick="markRideComplete(${r.id}, this)">✅ Complete Ride</button>`;
       }
-      return `<div class="ride-card status-${status}" style="${expired && status !== 'completed' ? 'opacity:0.65;' : ''}">
+      return `<div class="ride-card status-${status}">
         <div class="ride-route">
           <span class="route-dot from"></span><span class="route-loc route-from">${r.from_location}</span>
           <div class="route-line"></div>
           <span class="route-dot to"></span><span class="route-loc route-to">${r.to_location}</span>
         </div>
         <div class="ride-meta">
-          <span class="ride-meta-item">🕐 ${new Date(r.departure_time.replace('T',' ')).toLocaleString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
+          <span class="ride-meta-item">🕐 ${new Date(r.departure_time).toLocaleString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
           <span class="ride-meta-item">💺 ${r.seats_available}/${r.seats_total}</span>
           <span class="ride-meta-item">👥 ${r.bookings_count} booked</span>
         </div>
@@ -735,24 +722,21 @@ async function loadMyRides() {
   } else {
     bookedEl.innerHTML = `<div class="rides-grid">${data.booked.map(r => {
       const status = r.status || 'active';
-      const expired = isExpired(r);
       const arrivedBanner = status === 'driver_arrived'
         ? `<div class="arrived-banner"><span class="arrived-banner-icon">🚗</span><div class="arrived-banner-text"><strong>Driver has arrived!</strong><span>Head to ${r.from_location} now</span></div></div>` : '';
       const chips = {
-        active:         expired
-          ? `<span class="status-chip" style="background:rgba(100,116,139,.2);color:#94a3b8;">⏰ Expired</span>`
-          : `<span class="status-chip status-active"><span class="status-dot"></span>Active</span>`,
+        active:         `<span class="status-chip status-active"><span class="status-dot"></span>Active</span>`,
         driver_arrived: `<span class="status-chip status-driver_arrived">🚗 Driver Arrived!</span>`,
         completed:      `<span class="status-chip status-completed">✅ Completed</span>`,
       };
-      return `<div class="ride-card status-${status}" style="${expired && status !== 'completed' ? 'opacity:0.65;' : ''}">
+      return `<div class="ride-card status-${status}">
         <div class="ride-route">
           <span class="route-dot from"></span><span class="route-loc route-from">${r.from_location}</span>
           <div class="route-line"></div>
           <span class="route-dot to"></span><span class="route-loc route-to">${r.to_location}</span>
         </div>
         <div class="ride-meta">
-          <span class="ride-meta-item">🕐 ${new Date(r.departure_time.replace('T',' ')).toLocaleString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
+          <span class="ride-meta-item">🕐 ${new Date(r.departure_time).toLocaleString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
           <span class="ride-meta-item">💰 ${r.fare > 0 ? '₹' + r.fare : 'Free'}</span>
         </div>
         ${arrivedBanner}
