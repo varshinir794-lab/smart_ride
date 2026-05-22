@@ -174,10 +174,7 @@ def do_register():
 @login_required
 def api_stats():
     with get_db() as conn:
-        total_rides    = conn.execute(
-            "SELECT COUNT(*) FROM rides WHERE status NOT IN ('completed','expired') "
-            "AND datetime(replace(departure_time,'T',' ')) >= datetime('now','localtime')"
-        ).fetchone()[0]
+        total_rides    = conn.execute("SELECT COUNT(*) FROM rides WHERE status!='completed'").fetchone()[0]
         total_users    = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         total_bookings = conn.execute("SELECT COUNT(*) FROM bookings").fetchone()[0]
         my_rides       = conn.execute(
@@ -221,10 +218,10 @@ RIDE_QUERY = """
 @login_required
 def api_rides():
     with get_db() as conn:
-        rows = conn.execute(RIDE_QUERY.format(where=
-            "WHERE r.status NOT IN ('completed','expired') "
-            "AND datetime(replace(r.departure_time,'T',' ')) >= datetime('now','localtime')"
-        )).fetchall()
+        rows = conn.execute(RIDE_QUERY.format(where="""
+            WHERE r.status != 'completed'
+              AND datetime(replace(r.departure_time,'T',' ')) >= datetime('now', 'localtime')
+        """)).fetchall()
     return jsonify([row_to_ride(r) for r in rows])
 
 @app.route('/api/rides/search', methods=['POST'])
@@ -236,10 +233,10 @@ def api_search():
     dt  = d.get('date') or ''
 
     with get_db() as conn:
-        rows = conn.execute(RIDE_QUERY.format(where=
-            "WHERE r.status NOT IN ('completed','expired') "
-            "AND datetime(replace(r.departure_time,'T',' ')) >= datetime('now','localtime')"
-        )).fetchall()
+        rows = conn.execute(RIDE_QUERY.format(where="""
+            WHERE r.status != 'completed'
+              AND datetime(replace(r.departure_time,'T',' ')) >= datetime('now', 'localtime')
+        """)).fetchall()
     def jaccard(a, b):
         if not a or not b: return 0
         sa, sb = set(a.split()), set(b.split())
@@ -291,6 +288,12 @@ def api_book():
             return jsonify({'success': False, 'message': 'No seats available'})
         if ride['status'] != 'active':
             return jsonify({'success': False, 'message': 'This ride is no longer accepting bookings'})
+        # Check if departure time has already passed
+        try:
+            dep_str = ride['departure_time'].replace('T', ' ')
+            dep_dt  = datetime.strptime(dep_str[:16], '%Y-%m-%d %H:%M')
+            if dep_dt < datetime.now():
+                return jsonify({'success': False, 'message': 'This ride has already departed and cannot be booked'})
         existing = conn.execute(
             "SELECT id FROM bookings WHERE ride_id=? AND passenger_id=?", (ride_id, uid)
         ).fetchone()
@@ -384,16 +387,6 @@ def api_complete_ride():
 def api_my_rides():
     uid = session['user_id']
     with get_db() as conn:
-        # Auto-mark expired rides with no bookings as 'expired' status
-        conn.execute("""
-            UPDATE rides SET status='expired'
-            WHERE driver_id=? AND status='active'
-            AND datetime(replace(departure_time,'T',' ')) < datetime('now','localtime')
-            AND id NOT IN (
-                SELECT ride_id FROM bookings WHERE status IN ('confirmed','completed')
-            )
-        """, (uid,))
-
         offered = conn.execute("""
             SELECT r.*,
                    (SELECT COUNT(*) FROM bookings b WHERE b.ride_id=r.id AND b.status IN ('confirmed','completed')) AS bookings_count
@@ -420,7 +413,7 @@ def api_my_rides():
             'fare':            r['fare'],
             'status':          r['status'] or 'active',
             'bookings_count':  r['bookings_count'],
-        } for r in offered if r['status'] != 'expired'],
+        } for r in offered],
         'booked': [{
             'id':            r['id'],
             'from_location': r['from_location'],
